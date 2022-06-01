@@ -5,12 +5,12 @@
 [general]
 name=Flickr
 qgisMinimumVersion=3.0
-description=import photos as shapefile from flickr
+description=import geotagged photos and display them on a vector layer
 version=0.1
 author=arka
 email=arkaprava.mail@gmail.com
 
-about=import photos as shapefile from flickr
+about=this plugin imports geotagged photos from flickr using the flickr API. displays the geotags as features on a vectorlayer (can be used alongside the openstreetmap layer) that can be clicked on to reveal image metadata and the image itself.
 
 tracker=http://bugs
 repository=http://repo
@@ -27,7 +27,7 @@ tags=python
 
 homepage=http://homepage
 category=Plugins
-icon=icon.png
+icon=flickr.png
 # experimental flag
 experimental=True
 
