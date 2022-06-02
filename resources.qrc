@@ -1,5 +1,5 @@
 <RCC>
     <qresource prefix="/plugins/flickr" >
-        <file>icon.png</file>
+        <file>flickr.png</file>
     </qresource>
 </RCC>

@@ -5,7 +5,7 @@
 [general]
 name=Flickr
 qgisMinimumVersion=3.0
-description=import geotagged photos and display them on a vector layer
+description=import geotagged photos from flickr and display them on a vector layer
 version=0.1
 author=arka
 email=arkaprava.mail@gmail.com

@@ -17,8 +17,9 @@ from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, QDate, QVariant, QUrl
 
-from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsField
+from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsField, QgsPoint, QgsRectangle
 from PyQt5.QtWebKitWidgets import QWebView
+from qgis.utils import iface
 
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
@@ -31,11 +32,15 @@ MAX_SAME_QUERIES = MAX_RES_PER_QUERY / RES_PER_PAGE
 # assuming flickr does not have a data density that would gives us more 
 # than 4000 entries withing a box subtending 1e-4 latitudes and longitudes
 BOX_DIVISION_THRESHOLD = 1e-4   
+IMAGE_URL_TYPE = 'url_b'
+IMAGE_SIZE_SUFFIX = 'b'
+IMAGE_SIZE = 1024
 
 
 html_template_file = open(os.path.join(os.path.dirname(__file__), 'template.html'))
 html_template = html_template_file.read()
 html_template_file.close()
+
 
 class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
     def __init__(self, parent=None):
@@ -53,7 +58,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         self.csvFilePicker.clicked.connect(self._select_csv_file)
         self.startButton.clicked.connect(self._start_download_thread)
         self.stopButton.clicked.connect(self._stop_download_thread)
-        self.removeVectorLayer.clicked.connect(self._remove_layer)
+        self.removeVectorLayer.clicked.connect(self._remove_layers)
         self.closeImages.clicked.connect(self._close_browser_windows)
 
         # set download in progress flag as false
@@ -72,6 +77,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             "API_KEY": self.apiKey,
             "DB_FILE_NAME": self.dbFileName,
             "CSV_FILE_NAME": self.csvFileName,
+            "OUTPUT_DIR_NAME": self.outputDirName,
             "TABLE_NAME": self.tableName,
             "NORTH": self.north,
             "SOUTH": self.south,
@@ -79,7 +85,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             "WEST": self.west,
             "START_DATE": self.startDate,
             "END_DATE": self.endDate,
-            "SAVE_LOG": self.saveLogCheck
+            "SAVE_LOG": self.saveLogCheck,
         }
 
         self.configFilePath = os.path.join(os.path.dirname(__file__), ".conf")
@@ -108,9 +114,9 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             f.close()
         return
 
-    def _remove_layer(self):
+    def _remove_layers(self):
         try:
-            QgsProject.instance().removeMapLayers([self.vectorLayer.id()])
+            QgsProject.instance().removeMapLayers([self.markerLayer.id(), self.boundaryLayer.id()])
             QgsProject.instance().refreshAllLayers()
         except:
             pass
@@ -125,12 +131,11 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def _cleanup(self):
         # clean vector layer
-        self._remove_layer()
+        self._remove_layers()
 
         # close open browser windows
         self._close_browser_windows()
         
-
     def _save_input(self):
         try:
             f = open(self.configFilePath, 'w')
@@ -185,8 +190,15 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         csvFilePath, _ = QFileDialog.getSaveFileName(self, "choose csv file", "", "*.csv")
         self.csvFileName.setText(csvFilePath)
 
+    def _select_output_folder(self):
+        outputDir, _ = QFileDialog.getExistingDirectory(self, "choose output directory")
+        self.outputDirName.setText(outputDir)
+
     def _start_download_thread(self):
-        # starts download thread        
+        # starts download thread      
+        # reset stuff
+
+        self._cleanup()  
         self.progressBar.setValue(0)
 
         def number_error(elem):
@@ -223,6 +235,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             dbFileName = self.dbFileName.text()
             tableName = self.tableName.text()
             csvFileName = self.csvFileName.text()
+            outputDirName = self.outputDirName.text()
 
             if len(dbFileName) == 0:
                 QMessageBox.warning(self, "Error", "Choose db file")
@@ -235,6 +248,10 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             if len(csvFileName) == 0:
                 QMessageBox.warning(self, "Error", "Choose csv file")
                 self.csvFileName.focus()
+
+            if len(outputDirName) == 0:
+                QMessageBox.warning(self, "Error", "Choose output directory")
+                self.outputDirName.focus()
 
             try:
                 assert len(apiKey) != 0
@@ -287,7 +304,8 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             if ('northLat' in locals()) and ('southLat' in locals()) and ('eastLong' in locals()) and ('westLong' in locals())\
                 -180 <= eastLong <= 180 and -180 <= westLong <= 180 and\
                 -90  <= northLat <= 90  and -90  <= southLat <= 90 and \
-                startDate <= endDate:
+                startDate <= endDate \
+                and len(dbFileName) != 0 and len(tableName) != 0 and len(csvFileName) != 0 and len(outputDirName) != 0:
 
                 # no error in input; set download in progress
                 self.isDownloadInProgress = True
@@ -330,7 +348,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
                     if type(df) == pd.DataFrame:
                         self.df = df
-                        self._draw_layer()
+                        self._draw_layer(west, south, east, north, outputDirName)
                     
                 self.worker.finished.connect(worker_finished)
             else:
@@ -342,22 +360,50 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         fet = QgsFeature()
         fet.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lat, long)))
         fet.setAttributes([title, tags, datetaken, link])
-        self.provider.addFeatures([fet])
+        self.markerProvider.addFeatures([fet])
 
-    def _draw_layer(self):
+    def _draw_line(self, lat1, lat2, long1, long2):
+        start_point = QgsPoint(long1, lat1)
+        end_point = QgsPoint(long2, lat2)  
+
+        seg = QgsFeature()
+        seg.setGeometry(QgsGeometry.fromPolyline([start_point, end_point]))
+        seg.setAttributes(["", "", "", ""])
+        self.boundaryProvider.addFeatures([seg])
+
+    def _draw_layer(self, west, south, east, north, outputDirName):
+        west, south, east, north  = float(west), float(south), float(east), float(north)
+
         self.logBox.append('drawing vector layer...')
-        # create layer
-        self.vectorLayer = QgsVectorLayer("Point", "flickr", "memory")
-        self.provider = self.vectorLayer.dataProvider()
-        self.vectorLayer.startEditing()
+        # create marker layer
+        self.markerLayer = QgsVectorLayer("Point?crs=epsg:4326", "flickr marker", "memory")
+        self.markerProvider = self.markerLayer.dataProvider()
+        self.markerLayer.startEditing()
 
+        # create boundary layer
+        self.boundaryLayer = QgsVectorLayer("LineString?crs=epsg:4326", "flickr boundary", "memory")
+        self.boundaryProvider = self.boundaryLayer.dataProvider()
+        self.boundaryLayer.startEditing()
+        
         # add attributes for features
-        self.provider.addAttributes([
+        self.markerProvider.addAttributes([
             QgsField("title", QVariant.String), 
             QgsField("tags",  QVariant.String), 
             QgsField("datetaken", QVariant.String), 
             QgsField("link", QVariant.String)
         ])
+
+        # add bounding box
+        self._draw_line(north, north, west, east)
+        self._draw_line(south, south, west, east)
+        self._draw_line(north, south, east, east)
+        self._draw_line(north, south, west, west)
+
+        # focus on given area
+        # focusRect = QgsRectangle(south, west, north, east)
+        # self.canvas = iface.mapCanvas()
+        # self.canvas.setExtent(focusRect)
+        # self.canvas.refresh()
 
         # create feature for each of the points
         self.logBox.append(f"adding {len(self.df)} features...")
@@ -368,14 +414,19 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 row['title'], 
                 row['tags'], 
                 row['datetaken'], 
-                row['url_q']
+                row[IMAGE_URL_TYPE]
             )
+            # download images
 
         self.logBox.append(f"added {len(self.df)} features")
         
-        self.vectorLayer.commitChanges()
-        QgsProject.instance().addMapLayer(self.vectorLayer)
-        self.vectorLayer.selectionChanged.connect(self._handle_feature_selection)
+        self.markerLayer.commitChanges()
+        self.boundaryLayer.commitChanges()
+
+        QgsProject.instance().addMapLayer(self.markerLayer)
+        QgsProject.instance().addMapLayer(self.boundaryLayer)
+
+        self.markerLayer.selectionChanged.connect(self._handle_feature_selection)
         self.webViews = []
 
     def _open_web_view(self, title, tags, datetaken, link):
@@ -397,7 +448,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         webView.show()
 
     def _handle_feature_selection(self, selFeatures):
-        selFeatures = self.vectorLayer.selectedFeatures()
+        selFeatures = self.markerLayer.selectedFeatures()
         if len(selFeatures) > 0:
             for feature in selFeatures:
                 attrs = feature.attributes()
@@ -440,7 +491,7 @@ class Worker( QObject ):
 
         self.csvData = []
         self.df = None
-        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", "url_q", "height_q", "width_q"]
+        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", IMAGE_URL_TYPE]
 
     def stop(self):
         self.running = False
@@ -463,7 +514,7 @@ class Worker( QObject ):
         startDate, endDate = boundary[4:]
         startDate = str(startDate)
         endDate = str(endDate)
-        url = f"https://api.flickr.com/services/rest/?api_key={self.apiKey}&method=flickr.photos.search&bbox={bbox}&accuracy={LOCATION_ACCURACY}&format=json&nojsoncallback=1&page={page}&perpage={RES_PER_PAGE}&min_taken_date={startDate}&max_taken_date={endDate}&extras=geo%2Cdate_taken%2Ctags%2Curl_q"
+        url = f"https://api.flickr.com/services/rest/?api_key={self.apiKey}&method=flickr.photos.search&bbox={bbox}&accuracy={LOCATION_ACCURACY}&format=json&nojsoncallback=1&page={page}&perpage={RES_PER_PAGE}&min_taken_date={startDate}&max_taken_date={endDate}&extras=geo%2Cdate_taken%2Ctags%2C{IMAGE_URL_TYPE}"
         data = requests.get(url).json()
 
         if data['stat'] == 'ok':
@@ -478,14 +529,10 @@ class Worker( QObject ):
         # save to csv file
         for photo in data['photos']['photo']:
             l = [photo[key] for key in self.csvKeys[:-1]]
-            if self.csvKeys[-1] in photo:
-                l += [photo[self.csvKeys[-1]]]
-                self.csvData.append([photo[key] for key in self.csvKeys])
-            else:
-                pass
+            l += [f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"]
+            self.csvData.append(l)
 
-        l = len(data['photos']['photo'])
-        self.downloadCount += l
+        self.downloadCount += len(data['photos']['photo'])
         self.progress.emit(self.downloadCount)
 
     def run(self):
