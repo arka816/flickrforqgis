@@ -6,14 +6,14 @@
 name=Flickr
 qgisMinimumVersion=3.0
 description=import geotagged photos from flickr and display them on a vector layer
-version=0.1
+version=0.2
 author=arka
 email=arkaprava.mail@gmail.com
 
 about=this plugin imports geotagged photos from flickr using the flickr API. displays the geotags as features on a vectorlayer (can be used alongside the openstreetmap layer) that can be clicked on to reveal image metadata and the image itself.
 
 tracker=http://bugs
-repository=http://repo
+repository=https://github.com/arka816/flickrforqgis
 # End of mandatory metadata
 
 # Recommended items:
