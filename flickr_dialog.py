@@ -56,6 +56,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         # connect buttons to handler
         self.dbFilePicker.clicked.connect(self._select_db_file)
         self.csvFilePicker.clicked.connect(self._select_csv_file)
+        self.outputDirPicker.clicked.connect(self._select_output_folder)
         self.startButton.clicked.connect(self._start_download_thread)
         self.stopButton.clicked.connect(self._stop_download_thread)
         self.removeVectorLayer.clicked.connect(self._remove_layers)
@@ -191,7 +192,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         self.csvFileName.setText(csvFilePath)
 
     def _select_output_folder(self):
-        outputDir, _ = QFileDialog.getExistingDirectory(self, "choose output directory")
+        outputDir = QFileDialog.getExistingDirectory(self, "choose output directory")
         self.outputDirName.setText(outputDir)
 
     def _start_download_thread(self):
@@ -422,9 +423,9 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         
         self.markerLayer.commitChanges()
         self.boundaryLayer.commitChanges()
-
-        QgsProject.instance().addMapLayer(self.markerLayer)
+        
         QgsProject.instance().addMapLayer(self.boundaryLayer)
+        QgsProject.instance().addMapLayer(self.markerLayer)
 
         self.markerLayer.selectionChanged.connect(self._handle_feature_selection)
         self.webViews = []
@@ -453,6 +454,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             for feature in selFeatures:
                 attrs = feature.attributes()
                 title, tags, datetaken, link = attrs
+                # draw popup on web view or use native qt dialog
                 self._open_web_view(title, tags, datetaken, link)
 
     def _stop_download_thread(self):
