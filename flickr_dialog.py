@@ -318,9 +318,6 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 # clear log
                 self.logBox.clear()
 
-                # set and check output directory
-                self.outputDirName = outputDirName
-
                 # modify date to datetime object
                 startDate = datetime.combine(startDate.toPyDate(), datetime.min.time())
                 endDate = datetime.combine(endDate.toPyDate(), datetime.min.time())
@@ -328,7 +325,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
                 # create worker
                 self.thread = QThread()
-                self.worker = Worker(boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName)
+                self.worker = Worker(boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName, self.saveImages.isChecked())
                 self.worker.moveToThread(self.thread)
 
                 # connect signals to slots
@@ -409,6 +406,8 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         self.logBox.append(f"adding {len(self.df)} features...")
         for _, row in self.df.iterrows():
             self._add_marker(
+                float(row['longitude']),
+                float(row['latitude']),
                 row['title'], 
                 row['tags'], 
                 row['datetaken'], 
@@ -478,7 +477,7 @@ class Worker( QObject ):
     addError = pyqtSignal(str)
     total = pyqtSignal(int)
 
-    def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName):
+    def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName, saveImages):
         QObject.__init__(self)
         self.boundary = boundary
         self.apiKey = apiKey
@@ -486,6 +485,7 @@ class Worker( QObject ):
         self.csvFileName = csvFileName
         self.tableName = tableName
         self.outputDirName = outputDirName
+        self.saveImages = saveImages
 
         self.running = None
         self.downloadCount = 0
@@ -525,6 +525,22 @@ class Worker( QObject ):
             return None
         return data
 
+    def _save_image(self, url, filepath, filename):
+        r = requests.get(url, stream=True)
+        if r.status_code == 200:
+            try:
+                with open(filepath, 'wb') as f:
+                    for chunk in r.iter_content(CHUNK_SIZE):
+                        f.write(chunk)
+            except:
+                self.addMessage.emit(f"could not write file {filename}")
+            else:
+                self.addMessage.emit(f"saved file {filename}")
+        else:
+            self.addMessage.emit(f"could not write file {filename}")
+
+        del r
+
     def _push_data(self, data, page):
         self.addMessage.emit(f"pushing page {page} to csv file...")
 
@@ -538,20 +554,9 @@ class Worker( QObject ):
             self.csvData.append([photo[key] for key in self.csvKeys[:-2]] + [url, filepath])
 
             # download and save photo
-            r = requests.get(url, stream=True)
-            if r.status_code == 200:
-                try:
-                    with open(filepath, 'wb') as f:
-                        for chunk in r.iter_content(CHUNK_SIZE):
-                            f.write(chunk)
-                except:
-                    self.addMessage.emit(f"could not write file {filename}")
-                else:
-                    self.addMessage.emit(f"saved file {filename}")
-            else:
-                self.addMessage.emit(f"could not write file {filename}")
+            if self.saveImages:
+                self._save_image(url, filepath, filename)
 
-            del r
             i += 1
 
         self.downloadCount += len(data['photos']['photo'])
