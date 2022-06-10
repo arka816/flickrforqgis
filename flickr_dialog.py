@@ -35,6 +35,7 @@ BOX_DIVISION_THRESHOLD = 1e-4
 IMAGE_URL_TYPE = 'url_b'
 IMAGE_SIZE_SUFFIX = 'b'
 IMAGE_SIZE = 1024
+CHUNK_SIZE = 4096
 
 
 html_template_file = open(os.path.join(os.path.dirname(__file__), 'template.html'))
@@ -87,6 +88,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             "START_DATE": self.startDate,
             "END_DATE": self.endDate,
             "SAVE_LOG": self.saveLogCheck,
+            "SAVE_IMAGES": self.saveImages
         }
 
         self.configFilePath = os.path.join(os.path.dirname(__file__), ".conf")
@@ -148,7 +150,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         for key, val in self.elem_config_map.items():
             if key == "START_DATE" or key == "END_DATE":
                 l.append(f"{key}={val.date().toPyDate().strftime('%Y-%m-%d')}")
-            elif key == 'SAVE_LOG':
+            elif key == 'SAVE_LOG' or key == 'SAVE_IMAGES':
                 l.append(f"{key}={'true' if val.isChecked() else 'false'}")
             else:
                 l.append(f"{key}={val.text()}")
@@ -175,7 +177,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                     y, m, d = int(y), int(m), int(d)
                     d = QDate(y, m, d)
                     elem.setDate(d)
-                elif key == 'SAVE_LOG':
+                elif key == 'SAVE_LOG' or key == 'SAVE_IMAGES':
                     elem.setChecked(val == "true")
                 else:    
                     elem.setText(val)
@@ -240,19 +242,19 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
             if len(dbFileName) == 0:
                 QMessageBox.warning(self, "Error", "Choose db file")
-                self.dbFileName.focus()
+                self.dbFileName.setFocus()
 
             if len(tableName) == 0:
                 QMessageBox.warning(self, "Error", "Enter table name")
-                self.tableName.focus()
+                self.tableName.setFocus()
 
             if len(csvFileName) == 0:
                 QMessageBox.warning(self, "Error", "Choose csv file")
-                self.csvFileName.focus()
+                self.csvFileName.setFocus()
 
             if len(outputDirName) == 0:
                 QMessageBox.warning(self, "Error", "Choose output directory")
-                self.outputDirName.focus()
+                self.outputDirName.setFocus()
 
             try:
                 assert len(apiKey) != 0
@@ -316,6 +318,9 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 # clear log
                 self.logBox.clear()
 
+                # set and check output directory
+                self.outputDirName = outputDirName
+
                 # modify date to datetime object
                 startDate = datetime.combine(startDate.toPyDate(), datetime.min.time())
                 endDate = datetime.combine(endDate.toPyDate(), datetime.min.time())
@@ -323,7 +328,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
                 # create worker
                 self.thread = QThread()
-                self.worker = Worker(boundary, apiKey, dbFileName, tableName, csvFileName)
+                self.worker = Worker(boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName)
                 self.worker.moveToThread(self.thread)
 
                 # connect signals to slots
@@ -349,7 +354,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
                     if type(df) == pd.DataFrame:
                         self.df = df
-                        self._draw_layer(west, south, east, north, outputDirName)
+                        self._draw_layers(west, south, east, north)
                     
                 self.worker.finished.connect(worker_finished)
             else:
@@ -357,9 +362,9 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         else:
             pass
 
-    def _add_feature(self, lat, long, title, tags, datetaken, link):
+    def _add_marker(self, long, lat, title, tags, datetaken, link):
         fet = QgsFeature()
-        fet.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lat, long)))
+        fet.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(long, lat)))
         fet.setAttributes([title, tags, datetaken, link])
         self.markerProvider.addFeatures([fet])
 
@@ -372,10 +377,10 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         seg.setAttributes(["", "", "", ""])
         self.boundaryProvider.addFeatures([seg])
 
-    def _draw_layer(self, west, south, east, north, outputDirName):
+    def _draw_layers(self, west, south, east, north):
         west, south, east, north  = float(west), float(south), float(east), float(north)
 
-        self.logBox.append('drawing vector layer...')
+        self.logBox.append('drawing vector layers...')
         # create marker layer
         self.markerLayer = QgsVectorLayer("Point?crs=epsg:4326", "flickr marker", "memory")
         self.markerProvider = self.markerLayer.dataProvider()
@@ -400,24 +405,15 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         self._draw_line(north, south, east, east)
         self._draw_line(north, south, west, west)
 
-        # focus on given area
-        # focusRect = QgsRectangle(south, west, north, east)
-        # self.canvas = iface.mapCanvas()
-        # self.canvas.setExtent(focusRect)
-        # self.canvas.refresh()
-
         # create feature for each of the points
         self.logBox.append(f"adding {len(self.df)} features...")
         for _, row in self.df.iterrows():
-            self._add_feature(
-                float(row['longitude']), 
-                float(row['latitude']), 
+            self._add_marker(
                 row['title'], 
                 row['tags'], 
                 row['datetaken'], 
                 row[IMAGE_URL_TYPE]
             )
-            # download images
 
         self.logBox.append(f"added {len(self.df)} features")
         
@@ -445,8 +441,10 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             tags = []
         d = datetime.strptime(datetaken, "%Y-%m-%d %H:%M:%S").strftime('%A, %d %B, %Y')
 
+        # generate html
         webView.setHtml(html_template.format(title, link, title, d, tags))
         webView.show()
+        
 
     def _handle_feature_selection(self, selFeatures):
         selFeatures = self.markerLayer.selectedFeatures()
@@ -480,20 +478,21 @@ class Worker( QObject ):
     addError = pyqtSignal(str)
     total = pyqtSignal(int)
 
-    def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName):
+    def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName):
         QObject.__init__(self)
         self.boundary = boundary
         self.apiKey = apiKey
         self.dbFileName = dbFileName
         self.csvFileName = csvFileName
         self.tableName = tableName
+        self.outputDirName = outputDirName
 
         self.running = None
         self.downloadCount = 0
 
         self.csvData = []
         self.df = None
-        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", IMAGE_URL_TYPE]
+        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", IMAGE_URL_TYPE, "filepath"]
 
     def stop(self):
         self.running = False
@@ -523,16 +522,37 @@ class Worker( QObject ):
             self.addMessage.emit('fetched photo metadata successfully')
         elif data['stat'] == 'fail':
             self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
+            return None
         return data
 
     def _push_data(self, data, page):
         self.addMessage.emit(f"pushing page {page} to csv file...")
 
+        i = 1
+
         # save to csv file
         for photo in data['photos']['photo']:
-            l = [photo[key] for key in self.csvKeys[:-1]]
-            l += [f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"]
-            self.csvData.append(l)
+            filename = f"{i}.jpg"
+            filepath = os.path.join(self.outputDirName, filename)
+            url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"
+            self.csvData.append([photo[key] for key in self.csvKeys[:-2]] + [url, filepath])
+
+            # download and save photo
+            r = requests.get(url, stream=True)
+            if r.status_code == 200:
+                try:
+                    with open(filepath, 'wb') as f:
+                        for chunk in r.iter_content(CHUNK_SIZE):
+                            f.write(chunk)
+                except:
+                    self.addMessage.emit(f"could not write file {filename}")
+                else:
+                    self.addMessage.emit(f"saved file {filename}")
+            else:
+                self.addMessage.emit(f"could not write file {filename}")
+
+            del r
+            i += 1
 
         self.downloadCount += len(data['photos']['photo'])
         self.progress.emit(self.downloadCount)
