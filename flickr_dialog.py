@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 /***************************************************************************
- FlickrDialog
+ FlickrForQgis
  A QGIS plugin
  ***************************************************************************/
 """
@@ -11,6 +11,7 @@ import requests
 from datetime import datetime
 from collections import deque
 import pandas as pd
+import socket
 
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
@@ -41,6 +42,15 @@ CHUNK_SIZE = 4096
 html_template_file = open(os.path.join(os.path.dirname(__file__), 'template.html'))
 html_template = html_template_file.read()
 html_template_file.close()
+
+def is_connected():
+    try:
+        # connect to the host google.com -- tells us if the host is actually reachable
+        socket.create_connection(("1.1.1.1", 53))
+        return True
+    except OSError:
+        pass
+    return False
 
 
 class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
@@ -323,8 +333,10 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 endDate = datetime.combine(endDate.toPyDate(), datetime.min.time())
                 boundary = [westLong, southLat, eastLong, northLat, startDate, endDate]
 
-                # create worker
+                # create thread handler
                 self.thread = QThread()
+
+                # create worker
                 self.worker = Worker(boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName, self.saveImages.isChecked())
                 self.worker.moveToThread(self.thread)
 
@@ -339,17 +351,18 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 self.worker.finished.connect(self.worker.deleteLater)
                 self.thread.finished.connect(self.thread.deleteLater)
 
-                # start thread and run worker
+                # start thread
                 self.thread.start()
 
                 # enable button after thread finishes; set download not in progress
                 def worker_finished(df): 
+                    self.logBox.append("worker finished")
                     self.startButton.setEnabled(True)    
                     self.stopButton.setEnabled(False)
                     self.isDownloadInProgress = False
                     self.progressBar.setValue(self.progressBar.maximum())  
 
-                    if type(df) == pd.DataFrame:
+                    if type(df) == pd.DataFrame and len(df) > 0:
                         self.df = df
                         self._draw_layers(west, south, east, north)
                     
@@ -444,7 +457,6 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         webView.setHtml(html_template.format(title, link, title, d, tags))
         webView.show()
         
-
     def _handle_feature_selection(self, selFeatures):
         selFeatures = self.markerLayer.selectedFeatures()
         if len(selFeatures) > 0:
@@ -500,16 +512,26 @@ class Worker( QObject ):
     def _check_api_key(self):
         self.addMessage.emit("checking connection to flickr API...")
         url = f"https://api.flickr.com/services/rest/?api_key={self.apiKey}&method=flickr.test.echo&format=json&nojsoncallback=1"
-        data = requests.get(url).json()
-        
-        if data['stat'] == 'ok':
-            self.addMessage.emit("Connection OK")
-            return True
-        elif data['stat'] == 'fail':
-            self.addMessage.emit(f"Error: {data['message']}")
-            return False
+        r = requests.get(url)
+
+        if r.status_code == 200:
+            data = r.json()
+            if data['stat'] == 'ok':
+                self.addMessage.emit("Connection OK")
+                return True
+            elif data['stat'] == 'fail':
+                self.addMessage.emit(f"Error: {data['message']}")
+                return False
+        else:
+            if is_connected():
+                self.addError.emit(f"Error: {r.text}")
+            else:
+                self.addError.emit(f"Check Internet connection")
 
     def _search_photos(self, boundary, page):
+        if not self.running:
+            self._halt_error()
+            return
         self.addMessage.emit("Searching for photos on flickr...")
         bbox = ','.join([str(coords) for coords in boundary[:4]])
         startDate, endDate = boundary[4:]
@@ -524,13 +546,16 @@ class Worker( QObject ):
             self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
             return None
         return data
-
+        
     def _save_image(self, url, filepath, filename):
         r = requests.get(url, stream=True)
         if r.status_code == 200:
             try:
                 with open(filepath, 'wb') as f:
                     for chunk in r.iter_content(CHUNK_SIZE):
+                        if not self.running:
+                            self._halt_error()
+                            return
                         f.write(chunk)
             except:
                 self.addMessage.emit(f"could not write file {filename}")
@@ -539,6 +564,7 @@ class Worker( QObject ):
         else:
             self.addMessage.emit(f"could not write file {filename}")
 
+        r.close()
         del r
 
     def _push_data(self, data, page):
@@ -548,6 +574,10 @@ class Worker( QObject ):
 
         # save to csv file
         for photo in data['photos']['photo']:
+            if not self.running:
+                self._halt_error()
+                return
+
             filename = f"{i}.jpg"
             filepath = os.path.join(self.outputDirName, filename)
             url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"
@@ -562,24 +592,24 @@ class Worker( QObject ):
         self.downloadCount += len(data['photos']['photo'])
         self.progress.emit(self.downloadCount)
 
+    def _halt_error(self):
+        self.addMessage.emit("worker halted forcefully")
+        self.finished.emit(pd.DataFrame())
+
     def run(self):
         self.downloadCount = 0
         self.running = True
-
-        def _halt_error():
-            self.addMessage.emit("worker halted forcefully")
-            self.finished.emit(None)
 
         # check if api key is valid
         apiKeyValid = self._check_api_key()
 
         if not apiKeyValid:
             self.addError.emit("Error: invalid API key")
-            self.finished.emit(None)
+            self.finished.emit(pd.DataFrame())
             return
 
         if not self.running:
-            _halt_error()
+            self._halt_error()
             return
 
         # TODO: fix read only database issue
@@ -613,10 +643,10 @@ class Worker( QObject ):
         first = True
 
         # main loop
-        while len(bboxes) > 0:
+        while len(bboxes) and self.running > 0:
             # halt if halted
             if not self.running:
-                _halt_error()
+                self._halt_error()
                 return
             # recursively generate new queries to download all metadata
             bbox = bboxes.popleft()
@@ -626,6 +656,8 @@ class Worker( QObject ):
             page = 1
             data = self._search_photos(bbox, page)
 
+            if data == None:
+                return
             if data['stat'] == 'fail':
                 self.addError.emit(data['message'])
                 return
@@ -662,6 +694,8 @@ class Worker( QObject ):
                 while page < pages:
                     page += 1
                     data = self._search_photos(bbox, page)
+                    if data == None:
+                        return
                     if data['stat'] == 'fail':
                         self.addError.emit(data['message'])
                         return
@@ -677,7 +711,7 @@ class Worker( QObject ):
             df.to_csv(self.csvFileName)
         except Exception as ex:
             self.addError.emit(f"Error : {ex}")
-            self.finished.emit(None)
+            self.finished.emit(pd.DataFrame())
             return
         else:
             self.addMessage.emit("csv file saved")
