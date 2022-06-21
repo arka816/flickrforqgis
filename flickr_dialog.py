@@ -372,10 +372,10 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         else:
             pass
 
-    def _add_marker(self, long, lat, title, tags, datetaken, link):
+    def _add_marker(self, long, lat, title, tags, datetaken, link, ownername):
         fet = QgsFeature()
         fet.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(long, lat)))
-        fet.setAttributes([title, tags, datetaken, link])
+        fet.setAttributes([title, tags, datetaken, link, ownername])
         self.markerProvider.addFeatures([fet])
 
     def _draw_line(self, lat1, lat2, long1, long2):
@@ -406,7 +406,8 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             QgsField("title", QVariant.String), 
             QgsField("tags",  QVariant.String), 
             QgsField("datetaken", QVariant.String), 
-            QgsField("link", QVariant.String)
+            QgsField("link", QVariant.String),
+            QgsField("name", QVariant.String)
         ])
 
         # add bounding box
@@ -424,7 +425,8 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 row['title'], 
                 row['tags'], 
                 row['datetaken'], 
-                row[IMAGE_URL_TYPE]
+                row[IMAGE_URL_TYPE],
+                row['ownername']
             )
 
         self.logBox.append(f"added {len(self.df)} features")
@@ -438,7 +440,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         self.markerLayer.selectionChanged.connect(self._handle_feature_selection)
         self.webViews = []
 
-    def _open_web_view(self, title, tags, datetaken, link):
+    def _open_web_view(self, title, tags, datetaken, link, ownername):
         webView = QWebView()
         self.webViews.append(webView)
 
@@ -454,7 +456,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         d = datetime.strptime(datetaken, "%Y-%m-%d %H:%M:%S").strftime('%A, %d %B, %Y')
 
         # generate html
-        webView.setHtml(html_template.format(title, link, title, d, tags))
+        webView.setHtml(html_template.format(title, link, title, d, ownername, tags))
         webView.show()
         
     def _handle_feature_selection(self, selFeatures):
@@ -462,9 +464,9 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         if len(selFeatures) > 0:
             for feature in selFeatures:
                 attrs = feature.attributes()
-                title, tags, datetaken, link = attrs
+                title, tags, datetaken, link, ownername = attrs
                 # draw popup on web view or use native qt dialog
-                self._open_web_view(title, tags, datetaken, link)
+                self._open_web_view(title, tags, datetaken, link, ownername)
 
     def _stop_download_thread(self):
         self.worker.stop()
@@ -504,7 +506,7 @@ class Worker( QObject ):
 
         self.csvData = []
         self.df = None
-        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", IMAGE_URL_TYPE, "filepath"]
+        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", "ownername", IMAGE_URL_TYPE, "filepath"]
 
     def stop(self):
         self.running = False
@@ -537,8 +539,25 @@ class Worker( QObject ):
         startDate, endDate = boundary[4:]
         startDate = str(startDate)
         endDate = str(endDate)
-        url = f"https://api.flickr.com/services/rest/?api_key={self.apiKey}&method=flickr.photos.search&bbox={bbox}&accuracy={LOCATION_ACCURACY}&format=json&nojsoncallback=1&page={page}&perpage={RES_PER_PAGE}&min_taken_date={startDate}&max_taken_date={endDate}&extras=geo%2Cdate_taken%2Ctags%2C{IMAGE_URL_TYPE}"
-        data = requests.get(url).json()
+
+        extras = ["geo", "date_taken", "tags", IMAGE_URL_TYPE, "owner_name"]
+
+        params = {
+            "api_key": self.apiKey,
+            "method": "flickr.photos.search",
+            "bbox": bbox,
+            "accuracy": LOCATION_ACCURACY,
+            "format": "json",
+            "nojsoncallback": 1,
+            "page": page,
+            "perpage": RES_PER_PAGE,
+            "min_taken_date": startDate,
+            "max_taken_date": endDate,
+            "extras": ",".join(extras),
+            "media": "photos"
+        }
+        url = f"https://api.flickr.com/services/rest/"
+        data = requests.get(url, params=params).json()
 
         if data['stat'] == 'ok':
             self.addMessage.emit('fetched photo metadata successfully')
@@ -705,21 +724,18 @@ class Worker( QObject ):
         self.addMessage.emit(f"Finished downloading all {self.totalRecordCount} records")
         self.addMessage.emit("Saving into csv file...")
 
-        df = pd.DataFrame(self.csvData)
-        df.columns = self.csvKeys
+        self.df = pd.DataFrame(self.csvData)
+        self.df.columns = self.csvKeys
+        del self.csvData
+
         try:
-            df.to_csv(self.csvFileName)
+            self.df.to_csv(self.csvFileName)
         except Exception as ex:
             self.addError.emit(f"Error : {ex}")
             self.finished.emit(pd.DataFrame())
             return
         else:
             self.addMessage.emit("csv file saved")
-
-        self.df = pd.DataFrame(self.csvData)
-        self.df.columns = self.csvKeys
-
-        del self.csvData
 
         self.running = False
         self.finished.emit(self.df)
