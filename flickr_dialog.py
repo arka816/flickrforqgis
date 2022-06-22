@@ -503,6 +503,7 @@ class Worker( QObject ):
 
         self.running = None
         self.downloadCount = 0
+        self.imageCount = 1
 
         self.csvData = []
         self.df = None
@@ -589,15 +590,13 @@ class Worker( QObject ):
     def _push_data(self, data, page):
         self.addMessage.emit(f"pushing page {page} to csv file...")
 
-        i = 1
-
         # save to csv file
         for photo in data['photos']['photo']:
             if not self.running:
                 self._halt_error()
                 return
 
-            filename = f"{i}.jpg"
+            filename = f"{self.imageCount}.jpg"
             filepath = os.path.join(self.outputDirName, filename)
             url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"
             self.csvData.append([photo[key] for key in self.csvKeys[:-2]] + [url, filepath])
@@ -606,7 +605,7 @@ class Worker( QObject ):
             if self.saveImages:
                 self._save_image(url, filepath, filename)
 
-            i += 1
+            self.imageCount += 1
 
         self.downloadCount += len(data['photos']['photo'])
         self.progress.emit(self.downloadCount)
