@@ -22,21 +22,13 @@ from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsPr
 from PyQt5.QtWebKitWidgets import QWebView
 from qgis.utils import iface
 
+from .constants import IMAGE_SIZE_SUFFIX, IMAGE_URL_TYPE, LOCATION_ACCURACY, RES_PER_PAGE, \
+    MAX_RES_PER_QUERY, MAX_SAME_QUERIES, BOX_DIVISION_THRESHOLD, CHUNK_SIZE
+
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'flickr_dialog_base.ui'))
 
-LOCATION_ACCURACY = 16
-RES_PER_PAGE = 250          # defaults to 100; maximum is 500
-MAX_RES_PER_QUERY = 4000    # flickr API business policy
-MAX_SAME_QUERIES = MAX_RES_PER_QUERY / RES_PER_PAGE
-# assuming flickr does not have a data density that would gives us more 
-# than 4000 entries withing a box subtending 1e-4 latitudes and longitudes
-BOX_DIVISION_THRESHOLD = 1e-4   
-IMAGE_URL_TYPE = 'url_b'
-IMAGE_SIZE_SUFFIX = 'b'
-IMAGE_SIZE = 1024
-CHUNK_SIZE = 4096
 
 
 html_template_file = open(os.path.join(os.path.dirname(__file__), 'template.html'))
@@ -429,7 +421,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
                 row['ownername']
             )
 
-        self.logBox.append(f"added {len(self.df)} features")
+        self.logBox.append(f"added {len(self.df)} {'features' if len(self.df) > 1 else 'feature'}")
         
         self.markerLayer.commitChanges()
         self.boundaryLayer.commitChanges()
@@ -507,7 +499,7 @@ class Worker( QObject ):
 
         self.csvData = []
         self.df = None
-        self.csvKeys = ["id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", "ownername", IMAGE_URL_TYPE, "filepath"]
+        self.csvKeys = ["id", "owner", "place_id", "latitude", "longitude", "datetaken", "accuracy", "title", "tags", "ownername", IMAGE_URL_TYPE, "filepath"]
 
     def stop(self):
         self.running = False
@@ -535,6 +527,7 @@ class Worker( QObject ):
         if not self.running:
             self._halt_error()
             return
+        
         self.addMessage.emit("Searching for photos on flickr...")
         bbox = ','.join([str(coords) for coords in boundary[:4]])
         startDate, endDate = boundary[4:]
@@ -565,7 +558,9 @@ class Worker( QObject ):
         elif data['stat'] == 'fail':
             self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
             return None
+        
         return data
+        
         
     def _save_image(self, url, filepath, filename):
         r = requests.get(url, stream=True)
@@ -598,7 +593,7 @@ class Worker( QObject ):
 
             filename = f"{self.imageCount}.jpg"
             filepath = os.path.join(self.outputDirName, filename)
-            url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}_{IMAGE_SIZE_SUFFIX}.jpg"
+            url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}{IMAGE_SIZE_SUFFIX}.jpg"
             self.csvData.append([photo[key] for key in self.csvKeys[:-2]] + [url, filepath])
 
             # download and save photo
@@ -613,6 +608,31 @@ class Worker( QObject ):
     def _halt_error(self):
         self.addMessage.emit("worker halted forcefully")
         self.finished.emit(pd.DataFrame())
+
+    def _get_user_data(self, subg):
+        user_id = subg['owner'].iloc[0]
+
+        params = {
+            "api_key": self.apiKey,
+            "method": "flickr.profile.getProfile",
+            "user_id": user_id,
+            "format": "json",
+            "nojsoncallback": 1,
+        }
+
+        url = f"https://api.flickr.com/services/rest/"
+        data = requests.get(url, params=params).json()
+
+        if data['stat'] == 'ok':
+            self.addMessage.emit('fetched user data successfully')
+            subg['user_hometown'] = data['profile']['hometown']
+            subg['user_city'] = data['profile']['city']
+            subg['user_country'] = data['profile']['country']
+        elif data['stat'] == 'fail':
+            self.addMessage.emit(f"Error fetching user data: {data['message']}")
+
+        return subg
+    
 
     def run(self):
         self.downloadCount = 0
@@ -674,19 +694,23 @@ class Worker( QObject ):
             page = 1
             data = self._search_photos(bbox, page)
 
-            if data == None:
-                return
             if data['stat'] == 'fail':
                 self.addError.emit(data['message'])
+                self.finished.emit(pd.DataFrame())
                 return
 
             pages = data['photos']['pages']
+
+            if pages == 0:
+                self.addError.emit('no results found within given box')
+                self.finished.emit(pd.DataFrame())
+                return
 
             if first:
                 first = False
                 self.totalRecordCount = data['photos']['total']
                 self.total.emit(self.totalRecordCount)
-                self.addMessage.emit(f"downloading all {self.totalRecordCount} records")
+                self.addMessage.emit(f"downloading all {self.totalRecordCount} {'records' if self.totalRecordCount > 1 else 'record'}")
 
             if pages > MAX_SAME_QUERIES:
                 # too many same queries; dividing the box
@@ -716,6 +740,7 @@ class Worker( QObject ):
                         return
                     if data['stat'] == 'fail':
                         self.addError.emit(data['message'])
+                        self.finished.emit(pd.DataFrame())
                         return
                     self._push_data(data, page)
                     pages = data['photos']['pages']
@@ -727,8 +752,11 @@ class Worker( QObject ):
         self.df.columns = self.csvKeys
         del self.csvData
 
+        self.df = self.df.groupby('owner').apply(self._get_user_data)
+
         try:
-            self.df.to_csv(self.csvFileName)
+            with open(self.csvFileName, 'w') as f:
+                self.df.to_csv(f)
         except Exception as ex:
             self.addError.emit(f"Error : {ex}")
             self.finished.emit(pd.DataFrame())
