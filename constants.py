@@ -1,22 +1,23 @@
 '''
-    s	thumbnail	75	cropped square
-    q	thumbnail	150	cropped square
-    t	thumbnail	100	
-    m	small	240	
-    n	small	320	
-    w	small	400	
-    (none)	medium	500	
-    z	medium	640	
-    c	medium	800	
-    b	large	1024	
-    h	large	1600	has a unique secret; photo owner can restrict
-    k	large	2048	has a unique secret; photo owner can restrict
-    3k	extra large	3072	has a unique secret; photo owner can restrict
-    4k	extra large	4096	has a unique secret; photo owner can restrict
-    f	extra large	4096	has a unique secret; photo owner can restrict; only exists for 2:1 aspect ratio photos
-    5k	extra large	5120	has a unique secret; photo owner can restrict
-    6k	extra large	6144	has a unique secret; photo owner can restrict
-    o	original	arbitrary	has a unique secret; photo owner can restrict; files have full EXIF data; files might not be rotated; files can use an arbitrary file extension
+    Suffix	Class	    Longest edge (px)	Notes
+    s	    thumbnail	75	                cropped square
+    q	    thumbnail	150	                cropped square
+    t	    thumbnail	100	
+    m	    small	    240	
+    n	    small	    320	
+    w	    small	    400	
+    	    medium	    500	
+    z	    medium	    640	
+    c	    medium	    800	
+    b	    large	    1024	
+    h	    large	    1600	            has a unique secret; photo owner can restrict
+    k	    large	    2048	            has a unique secret; photo owner can restrict
+    3k	    extra large	3072	            has a unique secret; photo owner can restrict
+    4k	    extra large	4096	            has a unique secret; photo owner can restrict
+    f	    extra large	4096	            has a unique secret; photo owner can restrict; only exists for 2:1 aspect ratio photos
+    5k	    extra large	5120	            has a unique secret; photo owner can restrict
+    6k	    extra large	6144	            has a unique secret; photo owner can restrict
+    o	    original	arbitrary	        has a unique secret; photo owner can restrict; files have full EXIF data; files might not be rotated; files can use an arbitrary file extension
 '''
 
 IMAGE_SIZE_SUFFIX_MAP = {
@@ -54,3 +55,5 @@ MAX_SAME_QUERIES = MAX_RES_PER_QUERY / RES_PER_PAGE
 BOX_DIVISION_THRESHOLD = 1e-4   
 
 CHUNK_SIZE = 4096
+
+PROFILE_LOAD_TIME = 5

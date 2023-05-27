@@ -23,7 +23,7 @@ from PyQt5.QtWebKitWidgets import QWebView
 from qgis.utils import iface
 
 from .constants import IMAGE_SIZE_SUFFIX, IMAGE_URL_TYPE, LOCATION_ACCURACY, RES_PER_PAGE, \
-    MAX_RES_PER_QUERY, MAX_SAME_QUERIES, BOX_DIVISION_THRESHOLD, CHUNK_SIZE
+    MAX_RES_PER_QUERY, MAX_SAME_QUERIES, BOX_DIVISION_THRESHOLD, CHUNK_SIZE, PROFILE_LOAD_TIME
 
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
@@ -73,6 +73,7 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
 
         # set progress bar to zero
         self.progressBar.setValue(0)
+        self.progressBar.setMaximum(100)
 
         # disable stop button
         self.stopButton.setEnabled(False)
@@ -470,10 +471,11 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
         QMessageBox.warning(self, "Error", message)
 
     def _progress_from_worker(self, progress):
-        self.progressBar.setValue(progress)
+        self.progressBar.setValue(int((100 - PROFILE_LOAD_TIME) * progress / self.total_count))
 
     def _total_from_worker(self, total):
-        self.progressBar.setMaximum(int(total))
+        self.total_count = total
+        
 
 
 class Worker( QObject ):
@@ -495,7 +497,6 @@ class Worker( QObject ):
 
         self.running = None
         self.downloadCount = 0
-        self.imageCount = 1
 
         self.csvData = []
         self.df = None
@@ -560,13 +561,12 @@ class Worker( QObject ):
             return None
         
         return data
-        
-        
+         
     def _save_image(self, url, filepath, filename):
         r = requests.get(url, stream=True)
         if r.status_code == 200:
             try:
-                with open(filepath, 'wb') as f:
+                with open(os.path.join(filepath, filename), 'wb') as f:
                     for chunk in r.iter_content(CHUNK_SIZE):
                         if not self.running:
                             self._halt_error()
@@ -576,11 +576,14 @@ class Worker( QObject ):
                 self.addMessage.emit(f"could not write file {filename}")
             else:
                 self.addMessage.emit(f"saved file {filename}")
+                return True
         else:
             self.addMessage.emit(f"could not write file {filename}")
 
         r.close()
         del r
+
+        return False
 
     def _push_data(self, data, page):
         self.addMessage.emit(f"pushing page {page} to csv file...")
@@ -591,18 +594,37 @@ class Worker( QObject ):
                 self._halt_error()
                 return
 
-            filename = f"{self.imageCount}.jpg"
-            filepath = os.path.join(self.outputDirName, filename)
-            url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}{IMAGE_SIZE_SUFFIX}.jpg"
-            self.csvData.append([photo[key] for key in self.csvKeys[:-2]] + [url, filepath])
+            filepath = self.outputDirName
+
+            filename = f"{photo['id']}_{photo['secret']}{IMAGE_SIZE_SUFFIX}.jpg"
+            url = f"https://live.staticflickr.com/{photo['server']}/{filename}"
+            filename = f"{photo['server']}_{filename}"
+
+            fallback_filename = f"{photo['id']}_{photo['secret']}_o.jpg"
+            fallback_url = f"https://live.staticflickr.com/{photo['server']}/{fallback_filename}"
+            fallback_filename = f"{photo['server']}_{fallback_filename}"
+            
+            image_filepath = ''
 
             # download and save photo
             if self.saveImages:
-                self._save_image(url, filepath, filename)
+                downloaded_flag = self._save_image(url, filepath, filename)
+                if not downloaded_flag:
+                    # TODO: test fallback code
+                    if self._save_image(fallback_url, filepath, fallback_filename):
+                        image_filepath = os.path.join(filepath, fallback_filename)
+                else:
+                    image_filepath = os.path.join(filepath, filename)
 
-            self.imageCount += 1
+            self.csvData.append(
+                [photo[key] for key in self.csvKeys[:-2]] + 
+                [url, image_filepath]
+            )
 
-        self.downloadCount += len(data['photos']['photo'])
+            self.downloadCount += 1
+            self.progress.emit(self.downloadCount)
+
+        # self.downloadCount += len(data['photos']['photo'])
         self.progress.emit(self.downloadCount)
 
     def _halt_error(self):
@@ -621,19 +643,22 @@ class Worker( QObject ):
         }
 
         url = f"https://api.flickr.com/services/rest/"
-        data = requests.get(url, params=params).json()
+        r = requests.get(url, params=params)
 
-        if data['stat'] == 'ok':
-            self.addMessage.emit('fetched user data successfully')
-            subg['user_hometown'] = data['profile']['hometown']
-            subg['user_city'] = data['profile']['city']
-            subg['user_country'] = data['profile']['country']
-        elif data['stat'] == 'fail':
-            self.addMessage.emit(f"Error fetching user data: {data['message']}")
+        if r.status_code == 200:
+            data = r.json()
+
+            if data['stat'] == 'ok':
+                if 'hometown' in data['profile']:
+                    subg['user_hometown'] = data['profile']['hometown']
+                # subg['user_city'] = data['profile']['city']
+                # subg['user_country'] = data['profile']['country']
+                self.addMessage.emit(f"fetched user data successfully for: {user_id}")
+            elif data['stat'] == 'fail':
+                self.addMessage.emit(f"Error fetching user data: {data['message']}")
 
         return subg
     
-
     def run(self):
         self.downloadCount = 0
         self.running = True
@@ -746,14 +771,18 @@ class Worker( QObject ):
                     pages = data['photos']['pages']
 
         self.addMessage.emit(f"Finished downloading all {self.totalRecordCount} records")
-        self.addMessage.emit("Saving into csv file...")
 
-        self.df = pd.DataFrame(self.csvData)
-        self.df.columns = self.csvKeys
-        del self.csvData
+        try:
+            self.df = pd.DataFrame(self.csvData)
+            self.df.columns = self.csvKeys
+            del self.csvData
+        except Exception as ex:
+            self.addMessage.emit(ex)
 
         self.df = self.df.groupby('owner').apply(self._get_user_data)
 
+
+        self.addMessage.emit("flushing data into csv file...")
         try:
             with open(self.csvFileName, 'w') as f:
                 self.df.to_csv(f)
