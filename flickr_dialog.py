@@ -485,6 +485,8 @@ class Worker( QObject ):
     addError = pyqtSignal(str)
     total = pyqtSignal(int)
 
+    UNIQUE_KEY = IMAGE_URL_TYPE
+
     def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName, saveImages):
         QObject.__init__(self)
         self.boundary = boundary
@@ -713,7 +715,7 @@ class Worker( QObject ):
                 return
             # recursively generate new queries to download all metadata
             bbox = bboxes.popleft()
-            self.addMessage.emit(f"Downloading Box: {bbox[3]}°N-{bbox[1]}°S {bbox[2]}°E-{bbox[0]}°W {bbox[4].date()}-{bbox[5].date()}")
+            self.addMessage.emit(f"Downloading Box: {bbox[3]}°N-{bbox[1]}°S {bbox[2]}°E-{bbox[0]}°W {bbox[4].date()}->{bbox[5].date()}")
 
             # download
             page = 1
@@ -772,9 +774,16 @@ class Worker( QObject ):
 
         self.addMessage.emit(f"Finished downloading all {self.totalRecordCount} records")
 
+        self.addMessage.emit('dropping duplicates...')
+
         try:
             self.df = pd.DataFrame(self.csvData)
             self.df.columns = self.csvKeys
+
+            self.addMessage.emit(f"found {self.df.shape[0] - self.df[self.UNIQUE_KEY].unique().shape[0]} duplicates. dropping...")
+
+            self.df.drop_duplicates(subset=[self.UNIQUE_KEY], inplace=True)
+
             del self.csvData
         except Exception as ex:
             self.addMessage.emit(ex)
@@ -785,7 +794,7 @@ class Worker( QObject ):
         self.addMessage.emit("flushing data into csv file...")
         try:
             with open(self.csvFileName, 'w') as f:
-                self.df.to_csv(f)
+                self.df.to_csv(f, lineterminator='\n')
         except Exception as ex:
             self.addError.emit(f"Error : {ex}")
             self.finished.emit(pd.DataFrame())
