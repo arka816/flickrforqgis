@@ -25,6 +25,10 @@ from qgis.utils import iface
 from .constants import IMAGE_SIZE_SUFFIX, IMAGE_URL_TYPE, LOCATION_ACCURACY, RES_PER_PAGE, \
     MAX_RES_PER_QUERY, MAX_SAME_QUERIES, BOX_DIVISION_THRESHOLD, CHUNK_SIZE, PROFILE_LOAD_TIME
 
+localdir = os.path.join(os.getenv('APPDATA'), 'qgis-flickr')
+if not os.path.exists(localdir):
+    os.makedirs(localdir)
+
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'flickr_dialog_base.ui'))
@@ -94,8 +98,8 @@ class FlickrDialog(QtWidgets.QDialog, FORM_CLASS):
             "SAVE_IMAGES": self.saveImages
         }
 
-        self.configFilePath = os.path.join(os.path.dirname(__file__), ".conf")
-        self.logFilePath = os.path.join(os.path.dirname(__file__), ".logfile")
+        self.configFilePath = os.path.join(localdir, ".conf")
+        self.logFilePath = os.path.join(localdir, ".logfile")
 
         # load saved input
         self._load_prev_input()
@@ -729,9 +733,17 @@ class Worker( QObject ):
             pages = data['photos']['pages']
 
             if pages == 0:
-                self.addError.emit('no results found within given box')
-                self.finished.emit(pd.DataFrame())
-                return
+                if first:
+                    # first search returns no results
+                    # verdict: return control
+                    self.addError.emit('no results found within given box')
+                    self.finished.emit(pd.DataFrame())
+                    return
+                else:
+                    # recursive search returns no results
+                    # verdict: move on to next bbox
+                    self.addMessage.emit('no results found within given box')
+                    continue
 
             if first:
                 first = False
