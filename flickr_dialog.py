@@ -592,7 +592,7 @@ class Worker( QObject ):
         return False
 
     def _push_data(self, data, page):
-        self.addMessage.emit(f"pushing page {page} to csv file...")
+        self.addMessage.emit(f"pushing page {page} to dataframe...")
 
         # save to csv file
         for photo in data['photos']['photo']:
@@ -619,11 +619,12 @@ class Worker( QObject ):
                     # TODO: test fallback code
                     if self._save_image(fallback_url, filepath, fallback_filename):
                         image_filepath = os.path.join(filepath, fallback_filename)
+                        url = fallback_url
                 else:
                     image_filepath = os.path.join(filepath, filename)
 
             self.csvData.append(
-                [photo[key] for key in self.csvKeys[:-2]] + 
+                [photo.get(key, None) for key in self.csvKeys[:-2]] + 
                 [url, image_filepath]
             )
 

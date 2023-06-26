@@ -20,8 +20,24 @@ ATOMIC_BSON_TYPES = {
 
 
 def mongocache(port, db_name, collection_name):
+    # test connection and check if collection exists
+    try:
+        # create connection
+        client = pymongo.MongoClient("localhost", port)
 
-    mongo_collection = None
+        # create database if not exists
+        db = client[db_name]
+    except:
+        # connection failed
+        # log error and disable cacheing
+        mongo_collection = None
+    else:
+        # check if collection exists
+        if collection_name in db.list_collection_names():
+            mongo_collection = db[collection_name]
+        else:
+            mongo_collection = None
+
 
     def wrapper(func):
         def wrapped_func(*args):
@@ -34,11 +50,11 @@ def mongocache(port, db_name, collection_name):
                 # get function output
                 data = func(*args)
 
-                # create schema
+                # create schema from data and keys
                 keys, schema = _create_schema(data, *args)
 
                 # create collection
-                mongo_collection = _create_connection(port, db_name, collection_name, keys, schema)
+                mongo_collection = _create_collection(port, db_name, collection_name, keys, schema)
 
                 # push function output to collection
             else:
@@ -117,7 +133,7 @@ def _create_schema(data, *args):
 
     return keys, schema
 
-def _create_connection(port, db_name, collection_name, keys, schema):
+def _create_collection(port, db_name, collection_name, keys, schema):
     '''
         Input:
             - port: port id
