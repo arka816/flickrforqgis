@@ -806,7 +806,7 @@ class Worker( QObject ):
         self.addMessage.emit("flushing data into csv file...")
         try:
             with open(self.csvFileName, 'w') as f:
-                self.df.to_csv(f, lineterminator='\n')
+                self.df.to_csv(f, line_terminator='\n')
         except Exception as ex:
             self.addError.emit(f"Error : {ex}")
             self.finished.emit(pd.DataFrame())
