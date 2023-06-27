@@ -16,34 +16,47 @@ ATOMIC_BSON_TYPES = {
     bytes               : 'binary'
 }
 
+BUILTIN_ITERABLES = frozenset([list, tuple, set, frozenset])
+
 
 
 
 def mongocache(port, db_name, collection_name):
+    # create client variable for avoiding garbage collection in runtime
+    mongo_client = None
+    mongo_collection = None 
+    keys = []
+    schema = None
+
+    # hit-miss statistics
+    hits, misses, errors = 0, 0, 0
+
     # test connection and check if collection exists
     try:
         # create connection
         client = pymongo.MongoClient("localhost", port)
-
-        # create database if not exists
-        db = client[db_name]
     except:
         # connection failed
         # log error and disable cacheing
-        mongo_collection = None
+        pass
     else:
+        # create database if not exists
+        db = client[db_name]
+
         # check if collection exists
         if collection_name in db.list_collection_names():
             mongo_collection = db[collection_name]
-        else:
-            mongo_collection = None
+        
+        # close connection...recreate connection lazily later at runtime 
+        client.close()
 
 
     def wrapper(func):
         def wrapped_func(*args):
-            nonlocal mongo_collection, port, db_name, collection_name
+            nonlocal mongo_client, mongo_collection, keys, schema
+            nonlocal port, db_name, collection_name
+            nonlocal hits, misses
 
-            # create schema based on *args and data
             if not mongo_collection:
                 # create a collection and start cacheing
 
@@ -54,13 +67,28 @@ def mongocache(port, db_name, collection_name):
                 keys, schema = _create_schema(data, *args)
 
                 # create collection
-                mongo_collection = _create_collection(port, db_name, collection_name, keys, schema)
+                mongo_client, mongo_collection = _create_collection(port, db_name, collection_name, keys, schema)
 
                 # push function output to collection
-            else:
-                # try fetching data from database
-                pass
 
+            else:
+                # get keys from collection
+
+                # try fetching data from database
+                document = _query(mongo_collection, keys, args)
+
+                if document is not None:
+                    data = document.get('response', None)
+                    if data is not None:
+                        hits += 1
+                    else:
+                        errors += 1
+                else:
+                    data = None
+                    misses += 1
+
+            return data
+        
         return wrapped_func
     return wrapper
 
@@ -77,19 +105,19 @@ def _create_schema_recursive(data):
     '''
     # check if atomic type
     if data is None:
-        raise Exception("null value encountered")
+        raise RuntimeError("null value encountered")
 
     if type(data) in ATOMIC_BSON_TYPES:
         bsonType = ATOMIC_BSON_TYPES[type(data)]
         return {'bsonType': bsonType}
-    elif type(data) == list:
+    elif type(data) in BUILTIN_ITERABLES:
         # get bsonType for each item
         item_bson_types = [_create_schema_recursive(item) for item in data]
 
         # check if bson types are all the same
         bson_type_same = all(item_bson_type['bsonType'] == item_bson_types[0]['bsonType'] for item_bson_type in item_bson_types)
         if not bson_type_same:
-            raise Exception("items in array do not belong to the same BSON type")
+            raise RuntimeError("items in array do not belong to the same BSON type")
 
         return {
             'bsonType'  : 'array',
@@ -105,7 +133,6 @@ def _create_schema_recursive(data):
         }
     else:
         raise Exception(f"could not convert data of type {type(data)} into known BSON types")
-
 
 def _create_schema(data, *args):
     '''
@@ -131,7 +158,7 @@ def _create_schema(data, *args):
     # throw error when an entry does not match a BSON type
     schema = _create_schema_recursive(data)
 
-    return keys, schema
+    return tuple(keys), schema
 
 def _create_collection(port, db_name, collection_name, keys, schema):
     '''
@@ -143,6 +170,7 @@ def _create_collection(port, db_name, collection_name, keys, schema):
             - schema: schema for collection
 
         Return:
+            pymongo client (to avoid garbage collection)
             create a collection and return it
     '''
     try:
@@ -165,4 +193,27 @@ def _create_collection(port, db_name, collection_name, keys, schema):
     except:
         sys.exit()
     else:
-        return collection
+        return client, collection
+
+def _get_indices(collection):
+    '''
+        returns the indices used in a collection
+    '''
+
+def _query(collection, keys, args):
+    try:
+        query = {key: val for key, val in zip(keys, args)}
+        cursor = collection.find(query)
+        docs = list(cursor)
+
+        # print(docs)
+
+        if len(docs) > 0:
+            return docs[0]
+        else:
+            return None
+    except:
+        return None
+    
+def _push_data(collection):
+    pass
