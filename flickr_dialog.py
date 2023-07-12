@@ -12,6 +12,7 @@ from datetime import datetime
 from collections import deque
 import pandas as pd
 import socket
+import urllib
 
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
@@ -491,6 +492,9 @@ class Worker( QObject ):
 
     UNIQUE_KEY = IMAGE_URL_TYPE
 
+    CONNECT_TIMEOUT = 10
+    READ_TIMEOUT = 60
+
     def __init__(self, boundary, apiKey, dbFileName, tableName, csvFileName, outputDirName, saveImages):
         QObject.__init__(self)
         self.boundary = boundary
@@ -558,18 +562,23 @@ class Worker( QObject ):
             "media": "photos"
         }
         url = f"https://api.flickr.com/services/rest/"
-        data = requests.get(url, params=params).json()
 
-        if data['stat'] == 'ok':
-            self.addMessage.emit('fetched photo metadata successfully')
-        elif data['stat'] == 'fail':
-            self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
+        try:
+            r = self.flickr_session.get(url, params=params, timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT))
+        except:
             return None
-        
-        return data
+        else:
+            data = r.json()
+
+            if data['stat'] == 'ok':
+                self.addMessage.emit('fetched photo metadata successfully')
+            elif data['stat'] == 'fail':
+                self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
+            
+            return data
          
     def _save_image(self, url, filepath, filename):
-        r = requests.get(url, stream=True)
+        r = self.flickr_session.get(url, stream=True)
         if r.status_code == 200:
             try:
                 with open(os.path.join(filepath, filename), 'wb') as f:
@@ -706,6 +715,9 @@ class Worker( QObject ):
         #     self.addMessage.emit(f"old table dropped if any.")
         #     self.addMessage.emit(f"created new table {self.tableName}.")
 
+        # create session object
+        self.flickr_session = requests.Session()
+
         # recursively download all metadata
         bboxes = deque()
         bboxes.append(self.boundary)
@@ -726,10 +738,19 @@ class Worker( QObject ):
             page = 1
             data = self._search_photos(bbox, page)
 
+            if data is None:
+                # search request timeout
+                # verdict: move on to next box
+                self.addMessage.emit("request timeout")
+                continue
+
             if data['stat'] == 'fail':
-                self.addError.emit(data['message'])
-                self.finished.emit(pd.DataFrame())
-                return
+                # search request failure
+                # verdict: move on to next box
+                self.addMessage.emit(data['message'])
+                continue
+                # self.finished.emit(pd.DataFrame())
+                # return
 
             pages = data['photos']['pages']
 
