@@ -12,14 +12,18 @@ from datetime import datetime
 from collections import deque
 import pandas as pd
 import socket
-import urllib
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'mongocache'))
+
+from mongocache import mongocache
 
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, QDate, QVariant, QUrl
 
-from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsField, QgsPoint, QgsRectangle
+from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsField, QgsPoint, QgsRectangle, QgsMessageLog
 from PyQt5.QtWebKitWidgets import QWebView
 from qgis.utils import iface
 
@@ -534,6 +538,8 @@ class Worker( QObject ):
             else:
                 self.addError.emit(f"Check Internet connection")
 
+    @mongocache(db_name="flickr_qgis", collection_name="photos", port=27017, \
+                logger=lambda *args: QgsMessageLog.logMessage(" ".join([str(item) for item in args]), "flickr"))
     def _search_photos(self, boundary, page):
         if not self.running:
             self._halt_error()
@@ -574,7 +580,7 @@ class Worker( QObject ):
                 self.addMessage.emit('fetched photo metadata successfully')
             elif data['stat'] == 'fail':
                 self.addMessage.emit(f"Error fetching photo metadata: {data['message']}")
-            
+
             return data
          
     def _save_image(self, url, filepath, filename):
@@ -725,7 +731,7 @@ class Worker( QObject ):
         first = True
 
         # main loop
-        while len(bboxes) and self.running > 0:
+        while len(bboxes) and self.running:
             # halt if halted
             if not self.running:
                 self._halt_error()
